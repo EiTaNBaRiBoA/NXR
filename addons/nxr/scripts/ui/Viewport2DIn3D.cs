@@ -1,5 +1,6 @@
 using System;
 using Godot;
+using NXR;
 
 
 /// <summary>
@@ -7,7 +8,7 @@ using Godot;
 /// </summary>
 [Tool]
 [GlobalClass]
-public partial class Viewport2DIn3D : Node3D
+public partial class Viewport2DIn3D : Node3D, IPointerInteractable
 {
 	/// <summary>
 	/// The UI scene. Usually a Control scene with common interactable elements
@@ -89,6 +90,8 @@ public partial class Viewport2DIn3D : Node3D
 		get => false;
 	}
 
+
+	public Pointer CurrentPointer { get; set; }
 	public SubViewport SubViewport { set; get; }
 	public StaticBody3D CollisionObject { set; get; }
 
@@ -122,6 +125,8 @@ public partial class Viewport2DIn3D : Node3D
 	private StandardMaterial3D _screenMaterial;
 	private Vector2 _screenSize;
 	private UpdateMode _updateMode = UpdateMode.Throttled;
+	private Vector2 _pressedPos = new();
+	private Vector2 _prevPressedPos = new();
 
 	public override void _Ready()
 	{
@@ -130,8 +135,14 @@ public partial class Viewport2DIn3D : Node3D
 		SubViewport = GetNode<SubViewport>("%SubViewport");
 		CollisionObject = GetNode<StaticBody3D>("%CollisionObject");
 
+		if (SubViewport.GetChild(0) != null && Util.NodeIs(SubViewport.GetChild(0), typeof(Control)))
+		{
+			_subSceneInstance = SubViewport.GetChild(0) as Control;
+		}
+
 		Update();
 	}
+
 
 	public override void _Process(double delta)
 	{
@@ -145,8 +156,6 @@ public partial class Viewport2DIn3D : Node3D
 			if (_timeSinceUpdate >= 1.0)
 			{
 				_timeSinceUpdate = 0;
-
-				_dirty |= Dirty.Material;
 				_dirty |= Dirty.Size;
 
 				Update();
@@ -175,16 +184,16 @@ public partial class Viewport2DIn3D : Node3D
 
 		if (_dirty.HasFlag(Dirty.Size))
 		{
-			_dirty &= ~Dirty.Size;
+			_dirty &= ~Dirty.Albedo;
+			_dirty |= Dirty.Albedo | Dirty.Material;
 
 			if (Screen is not null)
 				_screenSize = (Screen.Mesh as PlaneMesh).Size;
 
-			if (CollisionObject is null) return; 
-			if (CollisionObject.GetChild(0) is null) return; 
+			if (CollisionObject is null) return;
+			if (CollisionObject.GetChild(0) is null) return;
 			(CollisionObject.GetChild<CollisionShape3D>(0).Shape as BoxShape3D).Size = new Vector3(_screenSize.X, _screenSize.Y, 0.01f);
 		}
-
 	}
 
 	/// <summary>
@@ -201,9 +210,11 @@ public partial class Viewport2DIn3D : Node3D
 		{
 			_dirty &= ~Dirty.Material;
 
+
 			_screenMaterial = new StandardMaterial3D
 			{
-				CullMode = BaseMaterial3D.CullModeEnum.Disabled
+				CullMode = BaseMaterial3D.CullModeEnum.Disabled,
+				ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded
 			};
 
 			_dirty |= Dirty.Albedo | Dirty.Surface;
@@ -212,6 +223,12 @@ public partial class Viewport2DIn3D : Node3D
 		if (_dirty.HasFlag(Dirty.SubScene))
 		{
 			_dirty &= ~Dirty.SubScene;
+
+			if (SubViewport.GetChild(0) != null && Util.NodeIs(SubViewport.GetChild(0), typeof(Control)))
+			{
+				_subSceneInstance = SubViewport.GetChild(0) as Control;
+				return;
+			}
 
 			if (_subSceneInstance is not null && IsInstanceValid(_subSceneInstance))
 			{
@@ -268,10 +285,6 @@ public partial class Viewport2DIn3D : Node3D
 		}
 	}
 
-	private void CheckForPointer()
-	{
-		return;
-	}
 
 	/// <summary>
 	/// Monitoring Screen's size to see if the collision needs to be updated.
@@ -294,5 +307,61 @@ public partial class Viewport2DIn3D : Node3D
 	public Control GetSubsceneInstance()
 	{
 		return _subSceneInstance;
+	}
+
+	private Vector2 GetVPLocalPoint(Vector3 point)
+	{
+		Vector3 localPoint = new();
+		CollisionShape3D shape = GetCollisionShape();
+		Vector3 shapeSize = (Vector3)shape.Shape.Get("size");
+		localPoint = CollisionObject.ToLocal(point);
+		localPoint /= new Vector3(shapeSize.X, shapeSize.Y, shapeSize.Z);
+		localPoint += new Vector3(0.5f, -0.5f, 0f);
+
+		return new Vector2(localPoint.X, -localPoint.Y) * SubViewport.Size;
+	}
+
+
+	public void PointerEntered()
+	{
+	}
+
+	public void PointerExited()
+	{
+	}
+
+	public void Pressed(Vector3 where)
+	{
+		InputEventMouseButton clickEvent = new();
+		clickEvent.Pressed = true;
+		clickEvent.ButtonIndex = MouseButton.Left;
+		clickEvent.Position = GetVPLocalPoint(where);
+		SubViewport.GetViewport().PushInput(clickEvent);
+
+		_pressedPos = GetVPLocalPoint(where);
+	}
+
+
+	public void Released(Vector3 where)
+	{
+		InputEventMouseButton clickEvent = new();
+		clickEvent.Pressed = false;
+		clickEvent.ButtonIndex = MouseButton.Left;
+		clickEvent.Position = GetVPLocalPoint(where);
+		SubViewport.GetViewport().PushInput(clickEvent);
+	}
+
+
+	public void Moved(Vector3 where)
+	{
+		InputEventMouseMotion eventMotion = new InputEventMouseMotion();
+		eventMotion.Position = GetVPLocalPoint(where);
+		eventMotion.GlobalPosition = GetVPLocalPoint(where);
+		eventMotion.Relative = GetVPLocalPoint(where) - _prevPressedPos;
+		eventMotion.Pressure = 1.0f;
+		eventMotion.ButtonMask = Godot.MouseButtonMask.Left;
+		SubViewport.PushInput(eventMotion);
+
+		_prevPressedPos = GetVPLocalPoint(where);
 	}
 }

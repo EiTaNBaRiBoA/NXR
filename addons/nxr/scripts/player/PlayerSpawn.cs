@@ -18,7 +18,7 @@ public partial class PlayerSpawn : Marker3D
 		GetParent().MoveChild(inst, 0);  
 		inst.GlobalTransform = GlobalTransform; 
 
-		Util.Recenter(this); 
+		Util.Recenter(); 
 
 	}
 

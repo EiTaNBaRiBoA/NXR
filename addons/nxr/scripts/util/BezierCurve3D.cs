@@ -8,7 +8,7 @@ public partial class BezierCurve3D : Path3D
     [Export] public bool update = true;
     [Export] public float UpdateTime = 0.1f; 
     [Export] public int Resolution = 10;
-    [Export] private Vector3 StartPoint = Vector3.Zero;
+    [Export] public Vector3 StartPoint = Vector3.Zero;
     [Export] public Vector3 MidPoint = new Vector3(0, 0.5f, -0.5f); 
     [Export] public Vector3 EndPoint = Vector3.Forward;
 
