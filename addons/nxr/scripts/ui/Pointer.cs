@@ -1,114 +1,175 @@
 using Godot;
 using NXR;
+using NXRInteractable;
 using System;
+using System.Diagnostics;
+using System.Text.RegularExpressions;
+
+
+enum PointerInputType
+{
+	Press,
+	Release,
+	Move,
+}
+
 
 public partial class Pointer : RayCast3D
 {
 
 	#region Exported
-	[Export] private Controller _controller; 
-	[Export] private float _velocityStrength = 1.0f; 
+	[Export] private Controller _controller;
+	[Export] public bool Disabled  = false; 
+
+	[Export(PropertyHint.Range,"0.0, 100.0")] private float _visiblePercent = 100.0f; 
+	[Export] private float _defaultDistance = 2.0f; 
+	[Export(PropertyHint.Range, "0.0, 1.0")] private float _velocityStrength = 0.1f;
+
+
+	[ExportGroup("Actions")]
+	[Export] private string _pressAction = "trigger_click";
+	[Export] private string _releaseAction = "trigger_click";
+
+
+	[ExportGroup("InteractorSettings")]
+	[Export] Interactor _interactor; 
+	[Export] bool _disableWhenGrabbing = true; 
 	#endregion
 
+	private IPointerInteractable _prevInteractable; 
 
-	#region Private
-	private bool _hittingGui = false; 
-	private bool _isActivatingGui = false; 
-	private Node3D _oldCollider = null; 
-	private Vector2 _oldViewportPoint; 
-	private Node3D _raycastColider = null; 
-	private float _ws = 1.0f;
-	# endregion
 
+
+	public override void _Ready()
+	{
+		if (_controller != null)
+		{
+			_controller.ButtonPressed += OnButtonPressed;
+			_controller.ButtonReleased += OnButtonReleased;
+		}
+
+		if (_interactor != null) 
+		{
+			_interactor.Grabbed += OnGrabbed; 
+			_interactor.Dropped += OnDropped; 
+		}
+	}
 
 
 	public override void _Process(double delta)
 	{
-		Node3D collider = (Node3D)GetCollider(); 
+		if (Disabled) return; 
 
-		if (_oldCollider != null && collider != _oldCollider) { 
-			ReleaseMouse(); 
+		TrySendInput(PointerInputType.Move);
+		ManageCurve(delta); 
+
+
+		// handle pointer enter 
+		if (_prevInteractable == null && GetPointerInteractable() != null) 
+		{ 
+			_prevInteractable = GetPointerInteractable(); 
+			_prevInteractable.PointerEntered(); 
 		}
 
-		if (collider != null) { 
-			TrySendInputToGUI(collider); 
+		// handle pointer exit 
+		if (GetCollider() == null && _prevInteractable != null) { 
+			 _prevInteractable.PointerExited(); 
+			 _prevInteractable = null; 
+		}
+	}
 
+
+	private void OnButtonPressed(String button)
+	{
+		if (button != _pressAction) return; 
+		
+		TrySendInput(PointerInputType.Press);
+	}
+
+
+	private void OnButtonReleased(String button)
+	{
+		if (button != _pressAction) return; 
+		
+		TrySendInput(PointerInputType.Release);
+	}
+
+
+	private void TrySendInput(PointerInputType type)
+	{
+		if (GetPointerInteractable() == null) return;
+
+		IPointerInteractable interactable = (IPointerInteractable)Util.GetParentOrOwnerOfType((Node)GetCollider(), typeof(IPointerInteractable));
+
+		switch (type)
+		{
+			case PointerInputType.Press:
+				interactable.Pressed(GetCollisionPoint());
+				break;
+			case PointerInputType.Release:
+				interactable.Released(GetCollisionPoint());
+				break;
+			case PointerInputType.Move:
+				interactable.Moved(GetCollisionPoint());
+				break;
+		}
+	}
+
+
+	private IPointerInteractable GetPointerInteractable()
+	{
+		return (IPointerInteractable)Util.GetParentOrOwnerOfType(
+			(Node)GetCollider(),
+			typeof(IPointerInteractable)
+		);
+	}
+
+
+	private void ManageCurve(double delta)
+	{
+		if (GetNode("BezierCurve3D") != null)
+		{
+			BezierCurve3D curve = (BezierCurve3D)GetNode("BezierCurve3D");
+			float distanceMultiplier = Mathf.InverseLerp(0.0f, _defaultDistance, TargetPosition.Z); 
+			Vector3 velOffset = _controller.GetLocalVelocity() * _velocityStrength * Mathf.Abs(distanceMultiplier); 
+
+			curve.EndPoint = TargetPosition * Mathf.InverseLerp(0, 100, _visiblePercent);
+			curve.MidPoint.Z = TargetPosition.Z / 2;
+			curve.MidPoint = (curve.StartPoint + curve.EndPoint) / 2 + velOffset; 
+		}
+
+		if (GetPointerInteractable() != null) 
+		{
 			Vector3 target = Vector3.Zero; 
 			target.Z = -(GlobalPosition.DistanceTo(GetCollisionPoint()) + 0.05f); 
 			TargetPosition = target; 
-
-		} else { 
-			Vector3 target = Vector3.Zero; 
-			target.Z = -(2); 
-			TargetPosition = target; 
-			_hittingGui = false; 
-		}
-
-		if (GetNode("BezierCurve3D") != null) { 
-			BezierCurve3D curve = (BezierCurve3D)GetNode("BezierCurve3D"); 
-			
-			curve.EndPoint = TargetPosition; 
-			curve.MidPoint.Z = TargetPosition.Z / 2; 
-			curve.MidPoint.X = Mathf.Lerp(curve.MidPoint.X, 0, (float)delta); 
-			curve.MidPoint.Y = Mathf.Lerp(curve.MidPoint.Y, 0, (float)delta); 
-		} 
-
-		if (_hittingGui) { 
 			Visible = true; 
-		} else { 
+		} 
+		else 
+		{ 
+			Vector3 target = Vector3.Zero; 
+			target.Z = -_defaultDistance; 
+			TargetPosition = target; 
 			Visible = false; 
 		}
 	}
 
-	private void TrySendInputToGUI(Node3D collider) { 
-		if (collider.GetChildCount() <= 0) { 
-			_hittingGui = false; 
-			return; 
-		}
 
-
-
-		if (!Util.NodeIs(collider.GetChild(0), typeof(SubViewport))) return;
-
-		SubViewport vp = (SubViewport)collider.GetChild(0); 
-		_hittingGui = true; 
-
-		CollisionShape3D shape = (CollisionShape3D)collider.GetChild(1); 
-		Vector3 shapeSize = (Vector3)shape.Shape.Get("size");  
-		Vector3 localPoint = collider.ToLocal(GetCollisionPoint()); 
-		localPoint /= new Vector3(shapeSize.X, shapeSize.Y, shapeSize.Z); 
-		localPoint += new Vector3(0.5f, -0.5f, 0f); 
-
-
-		Vector2 viewportPoint = new Vector2(localPoint.X, -localPoint.Y) * new Vector2(vp.Size.X, vp.Size.Y); 
-
-		InputEventMouseMotion eventMotion = new InputEventMouseMotion();
-		eventMotion.Position = viewportPoint; 
-		vp.PushInput(eventMotion); 
-
-		bool desiredActivateGUI = _controller.GetFloat("trigger") > 0;
-
-		if (desiredActivateGUI != _isActivatingGui) { 
-			InputEventMouseButton clickEvent = new InputEventMouseButton(); 
-
-			clickEvent.Pressed = desiredActivateGUI; 
-			clickEvent.ButtonIndex = MouseButton.Left; 
-			clickEvent.Position = viewportPoint; 
-			vp.PushInput(clickEvent); 
-			_isActivatingGui = desiredActivateGUI; 
-			_oldCollider = collider; 
-			_oldViewportPoint = viewportPoint; 
+	public void OnGrabbed(Interactable interactable)
+	{ 
+		if (_disableWhenGrabbing) 
+		{
+			Disabled = true; 
+			Visible = false; 
 		}
 	}
 
 
-	private void ReleaseMouse() { 
-		SubViewport vp = (SubViewport)_oldCollider.GetChild(0); 
-		InputEventMouseButton clickEvent = new InputEventMouseButton(); 
-		clickEvent.ButtonIndex = MouseButton.Left;
-		clickEvent.Position = _oldViewportPoint; 
-		vp.PushInput(clickEvent); 
-		_oldCollider = null; 
-		_isActivatingGui = false; 
+	public void OnDropped(Interactable interactable)
+	{ 
+		if (_disableWhenGrabbing) 
+		{
+			Disabled = false; 
+		}
 	}
 }
